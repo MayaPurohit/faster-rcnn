@@ -35,7 +35,7 @@ train_params:
   task_name: 'voc'
   seed : 1111
   acc_steps : 1 # increase you want to get gradients from >1 steps(kind of mimicking >1 batch size)
-  num_epochs: 1
+  num_epochs: 155
   lr_steps : [12, 16]
   lr: 0.001
   ckpt_name: 'faster_rcnn_voc2007.pth'
