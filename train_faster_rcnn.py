@@ -60,6 +60,7 @@ def train(args):
     
     acc_steps = train_config['acc_steps']
     num_epochs = train_config['num_epochs']
+    print("Num Epochs: ", num_epochs)
     step_count = 1
 
     for i in range(num_epochs):
