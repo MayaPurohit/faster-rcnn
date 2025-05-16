@@ -56,7 +56,6 @@ def apply_regression_pred_to_anchors_or_proposals(box_transform_pred, anchors_or
     box_transform_pred = box_transform_pred.reshape(box_transform_pred.size(0), -1, 4)
     
     # Get cx, cy, w, h from x1, y1, x2, y2
-    anchors_or_proposals = anchors_or_proposals.view(-1, 4)  # [1764, 4]
     w = anchors_or_proposals[:, 2] - anchors_or_proposals[:, 0]
     h = anchors_or_proposals[:, 3] - anchors_or_proposals[:, 1]
     center_x = anchors_or_proposals[:, 0] + 0.5 * w
@@ -73,14 +72,11 @@ def apply_regression_pred_to_anchors_or_proposals(box_transform_pred, anchors_or
     dw = torch.clamp(dw, max=math.log(1000.0 / 16)) #width and height of the box
     dh = torch.clamp(dh, max=math.log(1000.0 / 16))
     
-    print("dx shape:", dx.shape)
-    print("w shape:", w.shape)
-    print("center_x shape:", center_x.shape)
     # Apply transformations
-    pred_center_x = dx * w + center_x #adjust the position of the center of the box
-    pred_center_y = dy * h + center_y
-    pred_w = torch.exp(dw) * w #adjust the width and the height of the box itself
-    pred_h = torch.exp(dh) * h
+    pred_center_x = dx * w[:, None] + center_x[:, None] #adjust the position of the center of the box
+    pred_center_y = dy * h[:, None] + center_y[:, None]
+    pred_w = torch.exp(dw) * w[:, None] #adjust the width and the height of the box itself
+    pred_h = torch.exp(dh) * h[:, None]
     
     # Convert back to box coordinates
     pred_box_x1 = pred_center_x - 0.5 * pred_w #get the two corner values now 
@@ -182,7 +178,7 @@ class RegionProposalNetwork(nn.Module):
         
         # TODO: Implement the network layers
         # 1. A 3x3 convolutional layer with in_channels input channels and in_channels output channels
-        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size = 3, padding = 1)
+        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size = 3,  stride=1, padding = 1)
         # 2. Two 1x1 convolutional layers for classification and regression
         #    - Classification layer should output num_anchors channels (one for each anchor)
         #    - Regression layer should output num_anchors * 4 channels (four coordinates for each anchor)
@@ -194,26 +190,22 @@ class RegionProposalNetwork(nn.Module):
         # - Constant 0 for biases
                 
         nn.init.normal_(self.conv1.weight, std = 0.01)
-        if self.conv1.bias is not None:
-            nn.init.constant_(self.conv1.bias, 0)
+        nn.init.constant_(self.conv1.bias, 0)
 
         nn.init.normal_(self.conv_class.weight, std = 0.01)
-        if self.conv_class.bias is not None:
-            nn.init.constant_(self.conv_class.bias, 0)
+        nn.init.constant_(self.conv_class.bias, 0)
  
         nn.init.normal_(self.conv_regress.weight, std = 0.01)
-        if self.conv_regress.bias is not None:
-            nn.init.constant_(self.conv_regress.bias, 0)
+        nn.init.constant_(self.conv_regress.bias, 0)
     
     def generate_anchors(self, image, feat):
         """Generate anchors for all feature map locations with all scales and aspect ratios"""
         # TODO: Implement anchor generation
         # 1. Get feature map dimensions and calculate stride relative to input image
-        feat_width = feat.shape[0]
-        feat_height = feat.shape[1]
+        feat_height, feat_width = feat.shape[-2:]
 
-        image_width = image.shape[0]
-        image_height = image.shape[1]
+        image_height, image_width = image.shape[-2:]
+
 
         stride_width = torch.tensor(image_width // feat_width, dtype = torch.int64, device = feat.device)
         stride_height = torch.tensor(image_height // feat_height, dtype = torch.int64, device = feat.device)
@@ -268,13 +260,11 @@ class RegionProposalNetwork(nn.Module):
         # 3. Label anchors based on IoU thresholds:
         best_match_gt_idx_pre_threshold = best_match_gt_index.clone()
         #    - Positive (1): IoU > high_threshold
-        above_high_threshhold = best_match_iou > self.high_iou_threshold
-        best_match_gt_index[above_high_threshhold] = 1
         #    - Negative (0): IoU < low_threshold
         below_low_threshhold = best_match_iou < self.low_iou_threshold
         best_match_gt_index[below_low_threshhold] = -1
         #    - Ignore (-1): IoU between thresholds
-        between_threshold = (best_match_iou >= self.low_iou_threshold) & (best_match_iou <= self.high_iou_threshold)
+        between_threshold = (best_match_iou >= self.low_iou_threshold) & (best_match_iou < self.high_iou_threshold)
         best_match_gt_index[between_threshold] = -2
 
         # 4. For each GT box, find the anchor with highest IoU and label it positive
@@ -392,7 +382,7 @@ class RegionProposalNetwork(nn.Module):
         if not self.training or target is None:
                 return output
         else:
-            labels_for_anchors, matched_gt_boxes_for_anchors = self.assign_targets_to_anchors(anchors, target['bboxes'[0]])
+            labels_for_anchors, matched_gt_boxes_for_anchors = self.assign_targets_to_anchors(anchors, target['bboxes'][0])
 
             # get regression targets for the anchors based on the ground truth assingments 
 
@@ -400,18 +390,18 @@ class RegionProposalNetwork(nn.Module):
             
             sampled_neg_idx_mask, sampled_pos_idx_mask = sample_positive_negative(labels_for_anchors, positive_count = self.rpn_pos_count, total_count = self.rpn_batch_size)
 
-            sampled_idxs = torch.where(sampled_pos_idx_mask| sampled_neg_idx_mask)
+            sampled_idxs = torch.where(sampled_pos_idx_mask| sampled_neg_idx_mask)[0]
             localization_loss = (
                 nn.functional.smooth_l1_loss(
                     box_pred[sampled_pos_idx_mask],
                     regression_targets[sampled_pos_idx_mask],
                     beta = 1/9,
-                    reduction = 'sum'
+                    reduction = 'sum',
                 ) / (sampled_idxs.numel())
                 
             )
 
-            classification_loss = nn.functional.binary_cross_entropy_with_logits(cls_scores[sampled_idxs].flatten, labels_for_anchors[sampled_idxs].flatten())
+            classification_loss = nn.functional.binary_cross_entropy_with_logits(cls_scores[sampled_idxs].flatten(), labels_for_anchors[sampled_idxs].flatten())
 
             output["rpn_classification_loss"] = classification_loss
             output["rpn_localization_loss"] = localization_loss
@@ -498,6 +488,8 @@ class ROIHead(nn.Module):
         # 3. Sample positive and negative proposals
 
         if self.training and target is not None:
+
+            proposals = torch.cat([proposals, target['bboxes'][0]], dim=0)
             gt_boxes = target['bboxes'][0]
             gt_labels = target['labels'][0]
 
@@ -526,12 +518,12 @@ class ROIHead(nn.Module):
             possible_scales.append(scale)
         assert possible_scales[0] == possible_scales[1]
 
-        proposal_roi_pool_feats = torchvision.ops.roi.pool(feat, output_size=self.pool_size, spatial_scale = possible_scales[0])
+        proposal_roi_pool_feats = torchvision.ops.roi_pool(feat, [proposals], output_size=self.pool_size, spatial_scale = possible_scales[0])
         proposal_roi_pool_feats = proposal_roi_pool_feats.flatten(start_dim = 1)
         # 5. Apply RoI pooling to extract features from proposals
         # 6. Apply fully connected layers
         box_fc1 = nn.functional.relu(self.fc1(proposal_roi_pool_feats))
-        box_fc2 = nn.functional.relu(self.fc1(box_fc1))
+        box_fc2 = nn.functional.relu(self.fc2(box_fc1))
         # 7. Generate classification and box regression predictions
         cls_scores = self.classification_layer(box_fc2)
 
@@ -553,7 +545,8 @@ class ROIHead(nn.Module):
 
 
             localization_loss = nn.functional.smooth_l1_loss(box_transform_pred[fg_proposals_idxs, fg_proposals_labels], regression_targets[fg_proposals_idxs], beta=1/9,
-                reduction="sum")
+                reduction="sum",
+            )
             
             localization_loss = localization_loss/labels.sum()
 
@@ -562,7 +555,6 @@ class ROIHead(nn.Module):
         
             return frcnn_output
         else:
-
                 # During inference:
                 # 9. Apply regression to proposals
                 # 10. Filter and refine final predictions
@@ -574,7 +566,6 @@ class ROIHead(nn.Module):
             #create labels for each of the predictions
             pred_labels = torch.arange(num_classes, device = cls_scores.device)
             pred_labels = pred_labels.view(1, -1).expand_as(pred_scores)
-
             #remove background class predictions
             pred_boxes = pred_boxes[:, 1:]
             pred_scores = pred_scores[:, 1:]
@@ -608,14 +599,13 @@ class ROIHead(nn.Module):
         keep = (ws >= min_size) & (hs >= min_size)
         keep = torch.where(keep)[0]
         pred_boxes, pred_scores, pred_labels = pred_boxes[keep], pred_scores[keep], pred_labels[keep]
-       
         # 3. Apply per-class NMS
 
         keep_mask = torch.zeros_like(pred_scores, dtype = torch.bool)
 
         for id in torch.unique(pred_labels):
-            curr_indices = torch.where(pred_labels == id)
-            curr_keep_indices = torch.ops.torchvision.nms(pred_boxes[keep], pred_scores[keep],  self.nms_threshold)
+            curr_indices = torch.where(pred_labels == id)[0]
+            curr_keep_indices = torch.ops.torchvision.nms(pred_boxes[curr_indices], pred_scores[curr_indices],  self.nms_threshold)
 
             keep_mask[curr_indices[curr_keep_indices]] = True
 
@@ -626,10 +616,10 @@ class ROIHead(nn.Module):
         keep = post_nms_keep_indices[:self.topK_detections]
         pred_boxes, pred_scores, pred_labels = pred_boxes[keep], pred_scores[keep], pred_labels[keep]
 
-        return pred_boxes, pred_scores, pred_labels
+        return pred_boxes,  pred_labels, pred_scores
         # 4. Sort by score and take top-k
         # Return filtered boxes, labels, and scores
-        return None, None, None  # Replace with your implementation
+
 
 
 # ======================================================================
@@ -753,7 +743,7 @@ class FasterRCNN(nn.Module):
             target['bboxes'] = boxes
 
         else:
-            self.normalize_resize_image_and_boxes(image)
+           image, _ = self.normalize_resize_image_and_boxes(image, None)
         
         # 3. Extract features with backbone
         feat = self.backbone(image)

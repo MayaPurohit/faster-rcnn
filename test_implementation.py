@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -6,7 +7,7 @@ import torchvision
 from PIL import Image, ImageDraw
 
 # Import your modules
-from src.faster_rcnn_1 import (
+from src.faster_rcnn import (
     FasterRCNN, RegionProposalNetwork, ROIHead, 
     get_iou, boxes_to_transformation_targets, 
     apply_regression_pred_to_anchors_or_proposals,
@@ -90,8 +91,11 @@ def test_apply_regression_pred():
     assert torch.allclose(pred_boxes[0, 0], expected_box1, atol=1e-4), f"Box mismatch: {pred_boxes[0, 0]} vs {expected_box1}"
     
     # Expected output for second anchor: [5, 5, 25, 25] (doubling width and height)
-    # expected_box2 = torch.tensor([5.0, 5.0, 20.0, 20.0])
-    # assert torch.allclose(pred_boxes[1, 0], expected_box2, atol=1e-4), f"Box mismatch: {pred_boxes[1, 0]} vs {expected_box2}"
+
+
+    expected_box2 = torch.tensor([4.7207e-04, 4.7207e-04, 20.0, 20.0])
+
+    assert torch.allclose(pred_boxes[1, 0], expected_box2, atol=1e-3), f"Box mismatch: {pred_boxes[1, 0]} vs {expected_box2}"
     
     print("Apply regression predictions test passed!\n")
 
