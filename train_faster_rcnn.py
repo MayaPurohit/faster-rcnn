@@ -84,7 +84,6 @@ def train(args):
             frcnn_classification_losses.append(frcnn_output['frcnn_classification_loss'].item())
             frcnn_localization_losses.append(frcnn_output['frcnn_localization_loss'].item())
             loss = loss / acc_steps
-            print(loss)
             loss.backward()
             if step_count % acc_steps == 0:
                 optimizer.step()
