@@ -101,7 +101,11 @@ def train(args):
         loss_output += ' | FRCNN Classification Loss : {:.4f}'.format(np.mean(frcnn_classification_losses))
         loss_output += ' | FRCNN Localization Loss : {:.4f}'.format(np.mean(frcnn_localization_losses))
         print(loss_output)
+
         scheduler.step()
+
+        if num_epochs % 10 == 0:
+            torch.save(faster_rcnn_model.state_dict(),  os.path.join(train_config['task_name'], 'checkpoint_epoch' + str(num_epochs) + '.pth'))
     print('Done Training...')
 
 
