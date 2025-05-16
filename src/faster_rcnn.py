@@ -93,8 +93,9 @@ def sample_positive_negative(labels, positive_count, total_count):
     positive = torch.where(labels >= 1)[0]
     negative = torch.where(labels == 0)[0]
     
+    num_pos = positive_count
     # Cap number of positives and negatives
-    num_pos = min(positive.numel(), positive_count)
+    num_pos = min(positive.numel(), num_pos)
     num_neg = min(negative.numel(), total_count - num_pos)
     
     # Random sampling
@@ -212,8 +213,8 @@ class RegionProposalNetwork(nn.Module):
 
 
         # 2. Create base anchors at (0,0) for all combinations of scales and aspect ratios
-        scales = torch.as_tensor(self.scales, dtype = torch.int64, device = feat.device)
-        aspect_ratios = torch.as_tensor(self.aspect_ratios, dtype = torch.int64, device = feat.device)
+        scales = torch.as_tensor(self.scales, dtype = feat.dtype, device = feat.device)
+        aspect_ratios = torch.as_tensor(self.aspect_ratios, dtype = feat.dtype, device = feat.device)
         # 3. Create shift values for all grid positions in the feature map (h/w = aspect ratios and h*w = 1)
         h_ratios = torch.sqrt(aspect_ratios)
         w_ratios = 1/h_ratios
@@ -338,7 +339,7 @@ class RegionProposalNetwork(nn.Module):
         # 1. Apply convolutional layer
         rp_feat = nn.ReLU()(self.conv1(feat))
         cls_scores = self.conv_class(rp_feat)
-        box_pred = self.conv_regress(rp_feat)
+        box_transform_pred = self.conv_regress(rp_feat)
 
         # 2. Generate classification and regression predictions
         # 3. Generate anchors
@@ -356,16 +357,16 @@ class RegionProposalNetwork(nn.Module):
         # 5. Apply bounding box regression to anchors to get proposals
 
         #originally the shape is (Batch, Number of anchors per location*4, H_feat, W_feat)
-        box_pred = box_pred.view(box_pred.size(0), number_anchors_per_location, 4, rp_feat.shape[-2], rp_feat.shape[-1])
+        box_transform_pred = box_transform_pred.view(box_transform_pred.size(0), number_anchors_per_location, 4, rp_feat.shape[-2], rp_feat.shape[-1])
 
-        box_pred = box_pred.permute(0,3,4,1,2)
+        box_transform_pred = box_transform_pred.permute(0,3,4,1,2)
 
         #flatten the shape to 2d so that it is now (Batch*H_feat*W_feat*Number of anchor locations, 4)
-        box_pred= box_pred.reshape(-1, 4)
+        box_transform_pred= box_transform_pred.reshape(-1, 4)
         # 6. Filter proposals
 
 
-        proposals = apply_regression_pred_to_anchors_or_proposals(box_pred.detach().reshape(-1,1,4), anchors)
+        proposals = apply_regression_pred_to_anchors_or_proposals(box_transform_pred.detach().reshape(-1,1,4), anchors)
 
         proposals = proposals.reshape(proposals.size(0), 4)
 
@@ -391,19 +392,30 @@ class RegionProposalNetwork(nn.Module):
             sampled_neg_idx_mask, sampled_pos_idx_mask = sample_positive_negative(labels_for_anchors, positive_count = self.rpn_pos_count, total_count = self.rpn_batch_size)
 
             sampled_idxs = torch.where(sampled_pos_idx_mask| sampled_neg_idx_mask)[0]
-            localization_loss = (
-                nn.functional.smooth_l1_loss(
-                    box_pred[sampled_pos_idx_mask],
-                    regression_targets[sampled_pos_idx_mask],
-                    beta = 1/9,
-                    reduction = 'sum',
-                ) / (sampled_idxs.numel())
+            # localization_loss = (
+            #     nn.functional.smooth_l1_loss(
+            #         box_pred[sampled_pos_idx_mask],
+            #         regression_targets[sampled_pos_idx_mask],
+            #         beta = 1/9,
+            #         reduction = 'sum',
+            #     ) / (sampled_idxs.numel())
                 
-            )
+            # )
 
-            classification_loss = nn.functional.binary_cross_entropy_with_logits(cls_scores[sampled_idxs].flatten(), labels_for_anchors[sampled_idxs].flatten())
+            localization_loss = (
+                    torch.nn.functional.smooth_l1_loss(
+                        box_transform_pred[sampled_pos_idx_mask],
+                        regression_targets[sampled_pos_idx_mask],
+                        beta=1 / 9,
+                        reduction="sum",
+                    )
+                    / (sampled_idxs.numel())
+            ) 
 
-            output["rpn_classification_loss"] = classification_loss
+            cls_loss = torch.nn.functional.binary_cross_entropy_with_logits(cls_scores[sampled_idxs].flatten(),
+                                                                            labels_for_anchors[sampled_idxs].flatten())
+
+            output["rpn_classification_loss"] = cls_loss
             output["rpn_localization_loss"] = localization_loss
 
             return output
@@ -537,18 +549,19 @@ class ROIHead(nn.Module):
         frcnn_output = {}
 
         if self.training and target is not None:
-            classification_loss = nn.functional.cross_entropy(cls_scores, labels)
+            classification_loss = torch.nn.functional.cross_entropy(cls_scores, labels)
 
 
             fg_proposals_idxs = torch.where(labels > 0)[0]
-            fg_proposals_labels = labels[fg_proposals_idxs]
+            fg_cls_labels = labels[fg_proposals_idxs]
 
-
-            localization_loss = nn.functional.smooth_l1_loss(box_transform_pred[fg_proposals_idxs, fg_proposals_labels], regression_targets[fg_proposals_idxs], beta=1/9,
+            localization_loss = torch.nn.functional.smooth_l1_loss(
+                box_transform_pred[fg_proposals_idxs, fg_cls_labels],
+                regression_targets[fg_proposals_idxs],
+                beta=1/9,
                 reduction="sum",
             )
-            
-            localization_loss = localization_loss/labels.sum()
+            localization_loss = localization_loss/labels.numel()
 
             frcnn_output["frcnn_classification_loss"] = classification_loss
             frcnn_output["frcnn_localization_loss"] = localization_loss
